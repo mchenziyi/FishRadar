@@ -1,0 +1,45 @@
+import Foundation
+import CoreGraphics
+func box(_ x: CGFloat, _ height: CGFloat) -> CGRect { CGRect(x: x, y: 0.2, width: 0.1, height: height) }
+var tracker = ApproachTracker()
+assert(tracker.update([box(0.7, 0.2)], at: 10) == RadarLevels(left: 1, right: 0))
+assert(tracker.update([box(0.7, 0.24)], at: 10.4) == RadarLevels(left: 1, right: 0))
+assert(tracker.update([box(0.7, 0.26)], at: 10.8) == RadarLevels(left: 2, right: 0))
+assert(tracker.update([box(0.7, 0.31)], at: 11.2) == RadarLevels(left: 3, right: 0))
+assert(tracker.update([], at: 16) == RadarLevels())
+var right = ApproachTracker()
+_ = right.update([box(0.1, 0.2)], at: 10)
+_ = right.update([box(0.1, 0.24)], at: 10.4)
+assert(right.update([box(0.1, 0.26)], at: 10.8) == RadarLevels(left: 0, right: 2))
+var passing = ApproachTracker()
+_ = passing.update([box(0.1, 0.2)], at: 10)
+_ = passing.update([box(0.2, 0.2)], at: 10.4)
+assert(passing.update([box(0.3, 0.2)], at: 10.8) == RadarLevels(left: 0, right: 1))
+print("ApproachTracker tests passed")
+var seated = ApproachTracker()
+for i in 0..<5 { assert(seated.update([box(0.1, 0.2)], at: Double(i)) == RadarLevels(left: 0, right: 1)) }
+assert(seated.update([box(0.1, 0.2)], at: 5) == RadarLevels())
+assert(seated.update([box(0.16, 0.2)], at: 6) == RadarLevels(left: 0, right: 1))
+var custom = ApproachTracker()
+custom.stationarySeconds = 2
+assert(custom.update([box(0.1, 0.2)], at: 0) == RadarLevels(left: 0, right: 1))
+_ = custom.update([box(0.1, 0.2)], at: 1)
+assert(custom.update([box(0.1, 0.2)], at: 2) == RadarLevels())
+
+let seat = CGRect(x: 0.0, y: 0.0, width: 0.4, height: 1)
+assert(!includesDetection(box(0.1, 0.2), effective: nil, ignore: seat))
+assert(includesDetection(box(0.5, 0.2), effective: nil, ignore: seat))
+assert(!includesDetection(box(0.5, 0.2), effective: seat, ignore: nil))
+assert(includesDetection(box(0.1, 0.2), effective: seat, ignore: nil))
+
+let displayed = CGRect(x: 0.1, y: 0.2, width: 0.25, height: 0.3)
+let raw = mirrorZone(displayed)
+assert(abs(raw.minX - 0.65) < 0.00001)
+assert(abs(mirrorZone(raw).minX - displayed.minX) < 0.00001)
+assert(!includesDetection(CGRect(x: 0.7, y: 0.25, width: 0.1, height: 0.1), effective: nil, ignore: raw))
+// Status-only changes must never trigger automatic photographs.
+assert(!shouldCaptureAutomaticPhoto(previous: RadarLevels(), current: RadarLevels()))
+assert(!shouldCaptureAutomaticPhoto(previous: nil, current: RadarLevels()))
+assert(shouldCaptureAutomaticPhoto(previous: RadarLevels(), current: RadarLevels(left: 1, right: 0)))
+assert(shouldCaptureAutomaticPhoto(previous: RadarLevels(left: 1, right: 0), current: RadarLevels(left: 2, right: 0)))
+assert(!shouldCaptureAutomaticPhoto(previous: RadarLevels(left: 1, right: 0), current: RadarLevels()))
