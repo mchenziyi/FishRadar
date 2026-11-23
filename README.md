@@ -15,12 +15,26 @@ FishRadar 是一个 macOS 本地桌面应用，使用摄像头观察画面中的
 
 ## 开始使用
 
-需要 macOS、摄像头和 Apple Command Line Tools。在项目目录中运行：
+需要 macOS、摄像头和 Apple Command Line Tools。本地编译和运行不需要 Apple 开发者证书或公证。
+
+打开「终端」，依次执行：
 
 ```bash
+# 如果尚未安装，请先安装 Apple Command Line Tools
+xcode-select --install
+
+# 下载源码并进入项目目录
+git clone https://github.com/mchenziyi/FishRadar.git
+cd FishRadar
+
+# 编译并启动
 ./scripts/build.sh
 open build/FishRadar.app
 ```
+
+如果已经安装 Command Line Tools，可以跳过第一步。构建脚本会在本机生成并临时签名 `build/FishRadar.app`；如需放入「应用程序」，可以在 Finder 中将该 App 拖到「应用程序」文件夹。
+
+目前只在 Apple Silicon Mac 上验证过构建和运行，Intel Mac 尚未验证。编译好的 App 未经 Apple 开发者证书签名和公证，直接分发给其他 Mac 时可能被 Gatekeeper 阻止打开。
 
 首次启动时允许摄像头访问。应用在菜单栏运行，点击菜单栏上的左右箭头可以打开设置、显示或隐藏后视镜、暂停检测或退出。
 
