@@ -43,3 +43,7 @@ assert(!shouldCaptureAutomaticPhoto(previous: nil, current: RadarLevels()))
 assert(shouldCaptureAutomaticPhoto(previous: RadarLevels(), current: RadarLevels(left: 1, right: 0)))
 assert(shouldCaptureAutomaticPhoto(previous: RadarLevels(left: 1, right: 0), current: RadarLevels(left: 2, right: 0)))
 assert(!shouldCaptureAutomaticPhoto(previous: RadarLevels(left: 1, right: 0), current: RadarLevels()))
+
+assert(detectionInterval(lastAlert: nil, now: 10) == 0.4)
+assert(detectionInterval(lastAlert: 10, now: 11) == 0.2)
+assert(detectionInterval(lastAlert: 10, now: 12) == 0.4)

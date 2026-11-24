@@ -78,6 +78,7 @@ extension AppDelegate {
     }
     @objc func toggleResources() {
         if resourceTimer != nil {
+            resourceGeneration += 1
             writeDiagnostic("monitor_stop", [:])
             resourceTimer?.invalidate(); resourceTimer = nil; lastUsage = nil; resourceItem?.title = "资源监控：关闭"
             setPhotoCapture(false)
@@ -88,6 +89,8 @@ extension AppDelegate {
             settingsController?.setDiagnosticMessage("记录失败：\(error.localizedDescription)"); return
         }
         lastLoggedStatus = nil; lastLoggedLevels = nil
+        resourceGeneration += 1
+        camera.resetFrameSample()
         resourceItem?.title = "资源监控：采样中…"
         resourceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.sampleResources() }
         sampleResources()
@@ -106,7 +109,14 @@ extension AppDelegate {
         }
         if result == KERN_SUCCESS { let memory = Double(info.resident_size)/1_048_576; title += String(format: "内存 %.1f MiB", memory); values["resident_mib"] = memory }
         else { title += "内存不可用" }
-        writeDiagnostic("resources", values)
+        let generation = resourceGeneration
+        let sampleValues = values
+        camera.frameMetrics { [weak self] metrics in
+            guard let self = self, self.resourceTimer != nil, self.resourceGeneration == generation else { return }
+            var combined = sampleValues
+            combined.merge(metrics) { _, new in new }
+            self.writeDiagnostic("resources", combined)
+        }
         if resourceTimer != nil { resourceItem?.title = title; settingsController?.refreshDiagnostics() }
         lastUsage = (now, cpu)
     }

@@ -22,6 +22,11 @@ func includesDetection(_ box: CGRect, effective: CGRect?, ignore: CGRect?) -> Bo
     return (effective?.contains(center) ?? true) && !(ignore?.contains(center) ?? false)
 }
 
+func detectionInterval(lastAlert: TimeInterval?, now: TimeInterval) -> TimeInterval {
+    guard let lastAlert, now - lastAlert < 2 else { return 0.4 }
+    return 0.2
+}
+
 struct ApproachTracker {
     private struct Sample { let time: TimeInterval; let box: CGRect }
     private struct Track {

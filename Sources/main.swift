@@ -24,7 +24,16 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "FishRadar.camera")
     private var lastFrame = Date.distantPast
+    private var receivedFrameCount: UInt64 = 0
+    private var inferenceFrameCount: UInt64 = 0
+    private var lastFrameSample: (time: TimeInterval, received: UInt64, inferred: UInt64)?
+    private var lastAlert: TimeInterval?
     private var running = false
+    private var captureDevice: AVCaptureDevice?
+    private var cameraUseObservation: NSKeyValueObservation?
+    private var cameraFrameRateObservation: NSKeyValueObservation?
+    private var frameRateAttempts: [TimeInterval] = []
+    private var originalFrameRate: (format: AVCaptureDevice.Format, min: CMTime, max: CMTime)?
     private var approachTracker = ApproachTracker()
     private var effectiveZone: CGRect?
     private var ignoreZone: CGRect?
@@ -59,6 +68,30 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
+    func resetFrameSample() {
+        queue.async { self.lastFrameSample = nil }
+    }
+
+    func frameMetrics(_ completion: @escaping ([String: Any]) -> Void) {
+        queue.async {
+            let now = ProcessInfo.processInfo.systemUptime
+            var metrics: [String: Any] = ["camera_running": self.running, "camera_authorization": AVCaptureDevice.authorizationStatus(for: .video).rawValue]
+            if let previous = self.lastFrameSample, now > previous.time {
+                let elapsed = now - previous.time
+                metrics["capture_fps"] = Double(self.receivedFrameCount - previous.received) / elapsed
+                metrics["detection_fps"] = Double(self.inferenceFrameCount - previous.inferred) / elapsed
+            }
+            self.lastFrameSample = (now, self.receivedFrameCount, self.inferenceFrameCount)
+            if let device = self.captureDevice, self.running {
+                let duration = CMTimeGetSeconds(device.activeVideoMinFrameDuration)
+                if duration.isFinite && duration > 0 { metrics["camera_max_fps"] = 1 / duration }
+                metrics["frame_limit_applied"] = self.originalFrameRate != nil && duration.isFinite && duration >= 1.0 / 15.0 - 0.001
+                metrics["camera_shared"] = device.isInUseByAnotherApplication
+            }
+            DispatchQueue.main.async { completion(metrics) }
+        }
+    }
+
     func setStationarySeconds(_ seconds: TimeInterval) {
         queue.async { self.approachTracker.stationarySeconds = seconds }
     }
@@ -67,6 +100,7 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: configure()
         case .notDetermined:
+            report("等待摄像头授权", nil)
             AVCaptureDevice.requestAccess(for: .video) { [weak self] allowed in
                 if allowed { self?.configure() } else { self?.report("摄像头权限未开启", nil) }
             }
@@ -96,16 +130,86 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
             self.session.commitConfiguration()
             self.session.startRunning()
             self.running = self.session.isRunning
-            if self.running { DispatchQueue.main.async { self.onStarted?() } }
+            if self.running {
+                self.captureDevice = device
+                self.cameraUseObservation = device.observe(\.isInUseByAnotherApplication, options: [.new]) { [weak self] device, _ in
+                    self?.queue.async { [weak self] in self?.updateCameraFrameRate(device) }
+                }
+                self.cameraFrameRateObservation = device.observe(\.activeVideoMinFrameDuration, options: [.new]) { [weak self] device, _ in
+                    self?.queue.async { [weak self] in self?.updateCameraFrameRate(device) }
+                }
+                self.updateCameraFrameRate(device)
+                DispatchQueue.main.async { self.onStarted?() }
+            }
             self.report(self.running ? "正在检测" : "摄像头不可用", nil)
         }
+    }
+
+    private func canChangeFrameRate(_ device: AVCaptureDevice) -> Bool {
+        if #available(macOS 15.0, *), device.isAutoVideoFrameRateEnabled { return false }
+        if #available(macOS 26.0, *), device.isVideoFrameDurationLocked || device.isFollowingExternalSyncDevice { return false }
+        return device.isConnected
+    }
+
+    private func updateCameraFrameRate(_ device: AVCaptureDevice) {
+        guard running, captureDevice === device else { return }
+        if device.isInUseByAnotherApplication {
+            restoreCameraFrameRate()
+            frameRateAttempts.removeAll()
+            return
+        }
+        if let saved = originalFrameRate, device.activeFormat !== saved.format { originalFrameRate = nil }
+        guard canChangeFrameRate(device),
+              device.activeFormat.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= 15 && $0.maxFrameRate >= 15 }) else { return }
+        let target = CMTime(value: 1, timescale: 15)
+        let current = device.activeVideoMinFrameDuration
+        if current.isValid && CMTimeCompare(current, target) >= 0 { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        frameRateAttempts.removeAll { now - $0 > 60 }
+        // Stop retrying if the system or another client repeatedly overrides the setting.
+        guard frameRateAttempts.count < 3 else { return }
+        frameRateAttempts.append(now)
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            guard !device.isInUseByAnotherApplication, canChangeFrameRate(device),
+                  device.activeFormat.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= 15 && $0.maxFrameRate >= 15 }) else { return }
+            // The session can reset the frame rate when it starts, so set it afterward.
+            if originalFrameRate == nil {
+                originalFrameRate = (device.activeFormat, device.activeVideoMinFrameDuration, device.activeVideoMaxFrameDuration)
+            }
+            device.activeVideoMinFrameDuration = target
+        } catch {
+            // Keep the device's existing frame rate if it cannot be configured.
+        }
+    }
+
+    private func restoreCameraFrameRate() {
+        guard let saved = originalFrameRate, let device = captureDevice else { return }
+        originalFrameRate = nil
+        guard canChangeFrameRate(device), device.activeFormat === saved.format,
+              CMTimeCompare(device.activeVideoMinFrameDuration, CMTime(value: 1, timescale: 15)) == 0 else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            guard canChangeFrameRate(device), device.activeFormat === saved.format,
+                  CMTimeCompare(device.activeVideoMinFrameDuration, CMTime(value: 1, timescale: 15)) == 0 else { return }
+            device.activeVideoMinFrameDuration = saved.min
+            device.activeVideoMaxFrameDuration = saved.max
+        } catch {}
     }
 
     func stop() {
         queue.async { [weak self] in
             guard let self = self else { return }
+            self.cameraUseObservation?.invalidate(); self.cameraUseObservation = nil
+            self.cameraFrameRateObservation?.invalidate(); self.cameraFrameRateObservation = nil
+            self.frameRateAttempts.removeAll()
+            self.restoreCameraFrameRate()
+            self.captureDevice = nil
             self.session.stopRunning(); self.running = false
             self.previousPhotoLevels = nil
+            self.lastAlert = nil
             let requests = self.photoRequests; self.photoRequests.removeAll()
             DispatchQueue.main.async { for request in requests { request(.failure(NSError(domain: "FishRadar", code: 2, userInfo: [NSLocalizedDescriptionKey: "摄像头已暂停，未拍照。"]))) } }
             let seconds = self.approachTracker.stationarySeconds
@@ -129,7 +233,9 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard Date().timeIntervalSince(lastFrame) >= 0.2,
+        receivedFrameCount += 1
+        let now = Date()
+        guard now.timeIntervalSince(lastFrame) >= detectionInterval(lastAlert: lastAlert, now: now.timeIntervalSinceReferenceDate),
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         lastFrame = Date()
         if !photoRequests.isEmpty {
@@ -141,6 +247,7 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         request.upperBodyOnly = true
         do {
             try VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up).perform([request])
+            inferenceFrameCount += 1
             let boxes = (request.results ?? []).filter { $0.confidence >= 0.45 }.map(\.boundingBox)
             // The largest prominent central person is only a heuristic for the user.
             let candidate = boxes.indices.filter { i in
@@ -152,6 +259,7 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
                 return includesDetection(item.element, effective: effectiveZone, ignore: ignoreZone)
             }.map(\.element)
             let approaching = approachTracker.update(otherBoxes, at: Date().timeIntervalSinceReferenceDate)
+            if approaching.left > 0 || approaching.right > 0 { lastAlert = now.timeIntervalSinceReferenceDate }
             let status = candidate == nil ? "检测中 · 无法确认使用者" : "正在检测"
             if let generation = autoPhotoGeneration,
                shouldCaptureAutomaticPhoto(previous: previousPhotoLevels, current: approaching) {
@@ -180,13 +288,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var indicatorWindow: NSWindow!
     var indicatorView: NSImageView!
     var statusMenuItem: NSMenuItem!
-    var paused = false
+    var lifecycle = DetectionLifecycle()
+    var cameraRequested = true
     var pauseItem: NSMenuItem!
     var regionWindow: NSWindow?
     var regionView: RegionView?
     var regionPicker: NSPopUpButton?
     var resourceItem: NSMenuItem?
     var resourceTimer: Timer?
+    var resourceGeneration = 0
     var lastUsage: (Date, Double)?
     let hotKeys = HotKeys()
     let diagnostics = Diagnostics()
@@ -194,6 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var lastLoggedLevels: RadarLevels?
     var currentStatus = "正在启动"
     var currentLevels: RadarLevels?
+    var lastRenderedLevels: RadarLevels?
+    var hasRenderedLevels = false
     var settingsController: SettingsWindowController?
     var savePhotos = false
     var photoGeneration = 0
@@ -266,9 +378,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = true
         }
-        DistributedNotificationCenter.default().addObserver(self, selector: #selector(sleep), name: Notification.Name("com.apple.screenIsLocked"), object: nil)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(didLock), name: Notification.Name("com.apple.screenIsLocked"), object: nil)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(didUnlock), name: Notification.Name("com.apple.screenIsUnlocked"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(cameraError), name: AVCaptureSession.runtimeErrorNotification, object: camera.session)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(sleep), name: NSWorkspace.willSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
         hotKeys.onAction = { [weak self] action in
             switch action {
             case 1: self?.showMirror()
@@ -283,6 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         applyDetectionSettings()
         camera.setStationarySeconds(UserDefaults.standard.object(forKey: "stationarySeconds") as? Double ?? 5)
         camera.start()
+        if CommandLine.arguments.contains("--resume-monitoring") { toggleResources() }
         if CommandLine.arguments.contains("--settings") { DispatchQueue.main.async { self.showSettings() } }
     }
 
@@ -295,7 +410,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             lastLoggedStatus = status; lastLoggedLevels = levels
         }
         settingsController?.updateStatus(status, levels: levels)
-        setRadarIcon(levels)
+        if !hasRenderedLevels || lastRenderedLevels != levels {
+            setRadarIcon(levels)
+            lastRenderedLevels = levels
+            hasRenderedLevels = true
+        }
     }
 
     func setRadarIcon(_ levels: RadarLevels?) {
@@ -337,12 +456,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert.informativeText = "请输入 1 到 300 之间的整数（秒）。"
         }
     }
-    @objc func togglePause() {
-        paused.toggle(); pauseItem.title = paused ? "恢复检测" : "暂停检测"
-        if paused { camera.stop() } else { camera.start() }
+    private func reconcileDetection() {
+        let shouldRun = lifecycle.shouldRun
+        guard shouldRun != cameraRequested else { return }
+        cameraRequested = shouldRun
+        if shouldRun { camera.start() } else { camera.stop() }
     }
-    @objc func cameraError() { statusMenuItem.title = "摄像头不可用，请暂停后重试"; setRadarIcon(nil) }
-    @objc func sleep() { if !paused { togglePause() } }
+    @objc func togglePause() {
+        lifecycle.manuallyPaused.toggle()
+        pauseItem.title = lifecycle.manuallyPaused ? "恢复检测" : "暂停检测"
+        reconcileDetection()
+    }
+    @objc func cameraError() { statusMenuItem.title = "摄像头不可用，请暂停后重试"; setRadarIcon(nil); lastRenderedLevels = nil; hasRenderedLevels = true }
+    @objc func willSleep() { lifecycle.sleeping = true; reconcileDetection() }
+    @objc func didWake() { lifecycle.sleeping = false; reconcileDetection() }
+    @objc func didLock() { lifecycle.locked = true; reconcileDetection() }
+    @objc func didUnlock() { lifecycle.locked = false; reconcileDetection() }
     @objc func quit() { camera.stop(); NSApp.terminate(nil) }
 }
 
