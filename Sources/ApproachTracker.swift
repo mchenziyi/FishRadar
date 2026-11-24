@@ -13,6 +13,11 @@ func shouldCaptureAutomaticPhoto(previous: RadarLevels?, current: RadarLevels?) 
     return current.left > previous.left || current.right > previous.right
 }
 
+func shouldSwitchToWorkApp(previous: RadarLevels?, current: RadarLevels?) -> Bool {
+    guard let current, current.left >= 2 || current.right >= 2 else { return false }
+    return (previous?.left ?? 0) < 2 && (previous?.right ?? 0) < 2
+}
+
 func mirrorZone(_ rect: CGRect) -> CGRect {
     CGRect(x: 1 - rect.maxX, y: rect.minY, width: rect.width, height: rect.height)
 }

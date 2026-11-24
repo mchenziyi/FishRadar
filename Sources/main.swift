@@ -403,7 +403,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func update(_ status: String, _ levels: RadarLevels?, eventID: String? = nil) {
         statusMenuItem.title = status
+        let previousLevels = currentLevels
         currentStatus = status; currentLevels = levels
+        if UserDefaults.standard.bool(forKey: "automaticAppSwitch"), shouldSwitchToWorkApp(previous: previousLevels, current: levels) {
+            switchToWorkApp()
+        }
         if resourceTimer != nil && (status != lastLoggedStatus || levels != lastLoggedLevels) {
             let id = eventID ?? UUID().uuidString
             writeDiagnostic("detection", ["id": id, "status": status, "left": levels?.left ?? -1, "right": levels?.right ?? -1])

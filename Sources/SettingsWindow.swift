@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import UniformTypeIdentifiers
 
 final class SettingsWindowController: NSWindowController {
     unowned let app: AppDelegate
@@ -20,6 +21,10 @@ final class SettingsWindowController: NSWindowController {
     private let login = NSButton(checkboxWithTitle: "登录后自动启动", target: nil, action: nil)
     private let widthLabel = NSTextField(labelWithString: "")
     private let opacityLabel = NSTextField(labelWithString: "")
+    private let workAppLabel = NSTextField(labelWithString: "")
+    private let workAppMessage = NSTextField(labelWithString: "")
+    private let autoSwitch = NSButton(checkboxWithTitle: "黄色或红色提醒时自动切换", target: nil, action: nil)
+    private let testSwitch = NSButton(title: "测试切换", target: nil, action: nil)
 
     init(app: AppDelegate) {
         self.app = app
@@ -31,6 +36,7 @@ final class SettingsWindowController: NSWindowController {
         window.contentView?.addSubview(tabs)
         let general = NSTabViewItem(identifier: "general"); general.label = "常规"; general.view = generalPage(); tabs.addTabViewItem(general)
         let zones = NSTabViewItem(identifier: "zones"); zones.label = "检测区域与预览"; zones.view = regionPage(); tabs.addTabViewItem(zones)
+        let switching = NSTabViewItem(identifier: "switching"); switching.label = "自动切换"; switching.view = switchPage(); tabs.addTabViewItem(switching)
         let monitor = NSTabViewItem(identifier: "monitor"); monitor.label = "实验监控"; monitor.view = monitorPage(); tabs.addTabViewItem(monitor)
         window.center(); updateStatus(app.currentStatus, levels: app.currentLevels); refreshDiagnostics()
     }
@@ -90,6 +96,22 @@ final class SettingsWindowController: NSWindowController {
         v.addSubview(label("画面与后视镜同向；忽略区优先。状态：0 无、1 人、2 靠近、3 更近。", 15, 10, 630))
         return v
     }
+    private func switchPage() -> NSView {
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 660, height: 475))
+        v.addSubview(label("工作应用", 20, 425, 100))
+        workAppLabel.frame = NSRect(x: 120, y: 425, width: 325, height: 22); v.addSubview(workAppLabel)
+        let choose = NSButton(title: "选择应用…", target: self, action: #selector(chooseWorkApp))
+        choose.frame = NSRect(x: 460, y: 420, width: 120, height: 32); v.addSubview(choose)
+        autoSwitch.frame = NSRect(x: 20, y: 370, width: 350, height: 24)
+        autoSwitch.target = self; autoSwitch.action = #selector(toggleAutoSwitch); v.addSubview(autoSwitch)
+        v.addSubview(label("任一方向进入黄色或红色时，切换到所选应用。", 20, 330, 620))
+        v.addSubview(label("同一次提醒只切换一次；应用未运行时会自动打开。", 20, 300, 620))
+        testSwitch.frame = NSRect(x: 20, y: 250, width: 120, height: 32)
+        testSwitch.target = self; testSwitch.action = #selector(testWorkApp); v.addSubview(testSwitch)
+        workAppMessage.frame = NSRect(x: 20, y: 210, width: 620, height: 22); v.addSubview(workAppMessage)
+        refreshWorkApp()
+        return v
+    }
     private func monitorPage() -> NSView {
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 660, height: 475))
         v.addSubview(label("实验性监控与可靠性测试", 20, 430, 400))
@@ -137,6 +159,28 @@ final class SettingsWindowController: NSWindowController {
     }
     @objc private func selectZone() { regionView.zone = app.storedZone(app.zoneKeys[picker.indexOfSelectedItem]) }
     @objc private func clearZone() { UserDefaults.standard.removeObject(forKey: app.zoneKeys[picker.indexOfSelectedItem]); regionView.zone = nil; app.applyDetectionSettings() }
+    @objc private func chooseWorkApp() {
+        guard let window = window else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择工作应用"
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self = self, response == .OK, let url = panel.url, Bundle(url: url)?.bundleIdentifier != nil else { return }
+            UserDefaults.standard.set(url.path, forKey: "workAppPath")
+            self.workAppMessage.stringValue = ""
+            self.refreshWorkApp()
+        }
+    }
+    @objc private func toggleAutoSwitch() { UserDefaults.standard.set(autoSwitch.state == .on, forKey: "automaticAppSwitch") }
+    @objc private func testWorkApp() { workAppMessage.stringValue = ""; app.switchToWorkApp() }
+    private func refreshWorkApp() {
+        let path = UserDefaults.standard.string(forKey: "workAppPath")
+        workAppLabel.stringValue = path.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? "未选择应用"
+        autoSwitch.isEnabled = path != nil; testSwitch.isEnabled = path != nil
+        autoSwitch.state = UserDefaults.standard.bool(forKey: "automaticAppSwitch") ? .on : .off
+    }
+    func setWorkAppMessage(_ message: String) { workAppMessage.stringValue = message }
     @objc private func toggleDiagnostics() { app.toggleResources() }
     @objc private func togglePhotos() { app.setPhotoCapture(photoToggle.state == .on) }
     @objc private func revealLogs() { NSWorkspace.shared.open(app.diagnostics.fileURL.deletingLastPathComponent()) }

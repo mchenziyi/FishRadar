@@ -33,6 +33,19 @@ extension AppDelegate {
         UserDefaults.standard.set(NSStringFromPoint(window.frame.origin), forKey: key)
     }
     func savedHotKeys() -> [String] { UserDefaults.standard.stringArray(forKey: "hotKeys") ?? ["R", "P", "H"] }
+    func switchToWorkApp() {
+        guard let path = UserDefaults.standard.string(forKey: "workAppPath"), !path.isEmpty else {
+            settingsController?.setWorkAppMessage("请先选择一个工作应用。")
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.promptsUserIfNeeded = false
+        NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path, isDirectory: true), configuration: configuration) { [weak self] _, error in
+            guard error != nil else { return }
+            DispatchQueue.main.async { self?.settingsController?.setWorkAppMessage("无法打开工作应用，请重新选择。") }
+        }
+    }
     @objc func showSettings() {
         if settingsController == nil { settingsController = SettingsWindowController(app: self) }
         NSApp.activate(ignoringOtherApps: true)

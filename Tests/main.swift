@@ -44,6 +44,15 @@ assert(shouldCaptureAutomaticPhoto(previous: RadarLevels(), current: RadarLevels
 assert(shouldCaptureAutomaticPhoto(previous: RadarLevels(left: 1, right: 0), current: RadarLevels(left: 2, right: 0)))
 assert(!shouldCaptureAutomaticPhoto(previous: RadarLevels(left: 1, right: 0), current: RadarLevels()))
 
+assert(!shouldSwitchToWorkApp(previous: RadarLevels(), current: RadarLevels(left: 1, right: 0)))
+assert(shouldSwitchToWorkApp(previous: RadarLevels(left: 1, right: 0), current: RadarLevels(left: 2, right: 0)))
+assert(shouldSwitchToWorkApp(previous: RadarLevels(), current: RadarLevels(left: 0, right: 3)))
+assert(shouldSwitchToWorkApp(previous: nil, current: RadarLevels(left: 2, right: 0)))
+assert(!shouldSwitchToWorkApp(previous: RadarLevels(left: 2, right: 0), current: RadarLevels(left: 3, right: 0)))
+assert(!shouldSwitchToWorkApp(previous: RadarLevels(left: 2, right: 0), current: RadarLevels(left: 0, right: 2)))
+assert(!shouldSwitchToWorkApp(previous: RadarLevels(left: 2, right: 0), current: nil))
+assert(shouldSwitchToWorkApp(previous: RadarLevels(), current: RadarLevels(left: 0, right: 2)))
+
 assert(detectionInterval(lastAlert: nil, now: 10) == 0.4)
 assert(detectionInterval(lastAlert: 10, now: 11) == 0.2)
 assert(detectionInterval(lastAlert: 10, now: 12) == 0.4)
