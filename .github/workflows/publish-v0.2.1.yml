@@ -1,0 +1,35 @@
+name: Publish FishRadar v0.2.1
+on:
+  push:
+    branches:
+      - codex/publish-v0.2.1
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish verified Apple Silicon package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location --silent --show-error --retry 3 'https://raw.githubusercontent.com/mchenziyi/FishRadar/299e701571fd0cf169b01aad19a2a254e26092a7/releases/FishRadar-v0.2.1-macos-arm64.zip' --output FishRadar-v0.2.1-macos-arm64.zip
+          echo 'cae7e931656844608c32b890e186f142af3e631d369433ab7ca0dbc7450c1cc2  FishRadar-v0.2.1-macos-arm64.zip' | sha256sum --check
+          cat > notes.md <<'FISHRADAR_NOTES'
+          ## 本版更新
+
+          - 结合连续几帧的人员框判断相对远近，近处横向经过也能分档提醒。
+          - 减少同一位置固定窄框反复触发的绿灯。已确认的黄红等级在同一目标贴边时最多保留 0.6 秒。
+          - 统一设置预览、后视镜和带标注抓拍的镜像方向。可开启距离辅助线，查看人员框、框高和现用、候选灯色。
+          - 实验监控新增框宽、框高、触边及红灯判断依据。候选结果仅用于对照。照片需单独启用，保存在本机。
+
+          ## 下载与构建
+
+          安装包适用于 Apple Silicon Mac，采用临时签名，未经 Apple 开发者证书签名和公证。macOS 可能拦截直接下载的 App。本地运行也可从源码构建。
+
+          ZIP 的 SHA-256 为 `cae7e931656844608c32b890e186f142af3e631d369433ab7ca0dbc7450c1cc2`。
+
+          [安装与源码构建](https://github.com/mchenziyi/FishRadar/blob/v0.2.1/README.md) · [距离规则与诊断字段](https://github.com/mchenziyi/FishRadar/blob/v0.2.1/docs/distance-geometry-plan.md) · [中文 PR #1](https://github.com/mchenziyi/FishRadar/pull/1)
+          FISHRADAR_NOTES
+          gh release create v0.2.1 FishRadar-v0.2.1-macos-arm64.zip --repo "$GITHUB_REPOSITORY" --target 42ee4e6bcbbb74ad94a33f59af5694fa4f7ead8d --title 'FishRadar v0.2.1' --notes-file notes.md --fail-on-no-commits --latest
