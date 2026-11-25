@@ -5,7 +5,7 @@ var tracker = ApproachTracker()
 assert(tracker.update([box(0.7, 0.2)], at: 10) == RadarLevels(left: 1, right: 0))
 assert(tracker.update([box(0.7, 0.24)], at: 10.4) == RadarLevels(left: 1, right: 0))
 assert(tracker.update([box(0.7, 0.26)], at: 10.8) == RadarLevels(left: 2, right: 0))
-assert(tracker.update([box(0.7, 0.31)], at: 11.2) == RadarLevels(left: 3, right: 0))
+assert(tracker.update([box(0.7, 0.31)], at: 11.2) == RadarLevels(left: 2, right: 0))
 assert(tracker.update([], at: 16) == RadarLevels())
 var right = ApproachTracker()
 _ = right.update([box(0.1, 0.2)], at: 10)
@@ -15,6 +15,37 @@ var passing = ApproachTracker()
 _ = passing.update([box(0.1, 0.2)], at: 10)
 _ = passing.update([box(0.2, 0.2)], at: 10.4)
 assert(passing.update([box(0.3, 0.2)], at: 10.8) == RadarLevels(left: 0, right: 1))
+func upperBody(_ x: CGFloat, _ height: CGFloat, _ width: CGFloat) -> CGRect {
+    CGRect(x: x, y: 0.2, width: width, height: height)
+}
+var closePass = ApproachTracker()
+assert(closePass.update([upperBody(0.68, 0.48, 0.17)], at: 0).left == 1)
+assert(closePass.update([upperBody(0.76, 0.48, 0.17)], at: 0.4).left == 3, "A near person should warn even when moving sideways")
+assert(closePass.update([], at: 0.8).left == 3, "One missed frame should not rearm the warning")
+assert(closePass.update([], at: 1.1) == RadarLevels())
+
+var alreadyNear = ApproachTracker()
+let nearBox = upperBody(0.1, 0.36, 0.13)
+assert(alreadyNear.update([nearBox], at: 0).right == 1)
+assert(alreadyNear.update([nearBox], at: 0.4).right == 2)
+for time in stride(from: 0.8, through: 5.0, by: 0.4) { _ = alreadyNear.update([nearBox], at: time) }
+assert(alreadyNear.update([nearBox], at: 5).right == 0, "A fixed seat should still become quiet")
+
+var farGrowth = ApproachTracker()
+_ = farGrowth.update([box(0.7, 0.16)], at: 0)
+_ = farGrowth.update([box(0.7, 0.20)], at: 0.4)
+assert(farGrowth.update([box(0.7, 0.215)], at: 0.8).left == 1, "Size growth at a distance should stay green")
+
+var boxSpike = ApproachTracker()
+let farBox = box(0.7, 0.2)
+_ = boxSpike.update([farBox], at: 0)
+assert(boxSpike.update([upperBody(0.7, 0.52, 0.17)], at: 0.4).left == 1)
+assert(boxSpike.update([farBox], at: 0.8).left == 1)
+
+var edgeEntry = ApproachTracker()
+_ = edgeEntry.update([upperBody(0.9, 0.18, 0.10)], at: 0)
+_ = edgeEntry.update([upperBody(0.8, 0.29, 0.11)], at: 0.4)
+assert(edgeEntry.update([upperBody(0.75, 0.29, 0.11)], at: 0.8).left == 1, "An initial clipped box should not establish approach")
 print("ApproachTracker tests passed")
 var seated = ApproachTracker()
 for i in 0..<5 { assert(seated.update([box(0.1, 0.2)], at: Double(i)) == RadarLevels(left: 0, right: 1)) }
@@ -56,3 +87,126 @@ assert(shouldSwitchToWorkApp(previous: RadarLevels(), current: RadarLevels(left:
 assert(detectionInterval(lastAlert: nil, now: 10) == 0.4)
 assert(detectionInterval(lastAlert: 10, now: 11) == 0.2)
 assert(detectionInterval(lastAlert: 10, now: 12) == 0.4)
+
+var comparisonTracker = ApproachTracker()
+let slenderNear = upperBody(0.70, 0.40, 0.095)
+let farOnRight = upperBody(0.10, 0.18, 0.08)
+let comparisonFirst = comparisonTracker.update([slenderNear, farOnRight], at: 0, compareGeometry: true)
+assert(comparisonFirst.geometry == RadarLevels(left: 1, right: 1))
+let comparisonNext = comparisonTracker.update([farOnRight, slenderNear], at: 0.4, compareGeometry: true)
+assert(comparisonNext.current == RadarLevels(left: 1, right: 1))
+assert(comparisonNext.geometry == RadarLevels(left: 2, right: 1))
+assert(!shouldSwitchToWorkApp(previous: comparisonFirst.current, current: comparisonNext.current))
+let unstable = comparisonTracker.update([slenderNear], at: 0.8, compareGeometry: true, viewUnstable: true)
+assert(unstable.geometry == RadarLevels(left: 1, right: 1))
+assert(comparisonTracker.update([slenderNear], at: 1.2, compareGeometry: true).geometry?.left == 1)
+assert(comparisonTracker.update([slenderNear], at: 1.6, compareGeometry: true).geometry?.left == 2)
+assert(comparisonTracker.update([slenderNear], at: 2, compareGeometry: false).geometry == nil)
+comparisonTracker.resetGeometry()
+assert(comparisonTracker.update([slenderNear], at: 2.4, compareGeometry: true).geometry?.left == 1)
+assert(comparisonTracker.update([slenderNear], at: 2.8, compareGeometry: true).geometry?.left == 2)
+assert(comparisonTracker.update([slenderNear], at: 3.6, compareGeometry: true).geometry?.left == 1)
+assert(comparisonTracker.update([slenderNear], at: 5, compareGeometry: true).geometry?.left == 1)
+
+do {
+    var intermittent = ApproachTracker()
+    let chair = upperBody(0.02, 0.15, 0.055)
+    assert(intermittent.update([chair], at: 0).right == 1)
+    assert(intermittent.update([], at: 2).right == 0)
+    assert(intermittent.update([chair.offsetBy(dx: 0.003, dy: 0)], at: 2.4).right == 1)
+    assert(intermittent.update([], at: 5).right == 0)
+    assert(intermittent.update([chair], at: 5.4).right == 0, "A fixed small box should stop rearming green after repeated gaps")
+    assert(intermittent.update([upperBody(0.02, 0.42, 0.15)], at: 5.8).right == 1, "Growth at the same location should restore detection")
+    assert(intermittent.update([upperBody(0.02, 0.42, 0.15)], at: 6.2).right == 2)
+
+    var remembered = ApproachTracker()
+    _ = remembered.update([chair], at: 0)
+    _ = remembered.update([chair], at: 3)
+    let suppressed = remembered.update([chair], at: 6, compareGeometry: true)
+    assert(suppressed.current.right == 0 && suppressed.geometry?.right == 0)
+    assert(suppressed.evidence.first?.state.current == .repeatedSmallBox)
+    var expiredMemory = remembered
+    assert(expiredMemory.update([chair], at: 68).right == 1, "Memory should expire after 60 seconds without a match")
+    assert(remembered.update([chair.offsetBy(dx: 0.03, dy: 0)], at: 6.4).right == 1)
+}
+
+do {
+    // Observed at the left edge after mirroring. The box is tall but unusually narrow.
+    let fixed = CGRect(x: 0.9365, y: 0.283, width: 0.061, height: 0.244)
+    let jitter = CGRect(x: 0.935, y: 0.281, width: 0.062, height: 0.249)
+    var narrowEdge = ApproachTracker()
+    assert(narrowEdge.update([fixed], at: 0).left == 1)
+    assert(narrowEdge.update([], at: 1).left == 0)
+    assert(narrowEdge.update([jitter], at: 2).left == 1)
+    assert(narrowEdge.update([], at: 4).left == 0)
+    let suppressed = narrowEdge.update([fixed], at: 6, compareGeometry: true)
+    assert(suppressed.current.left == 0 && suppressed.geometry?.left == 0, "A recurring fixed narrow box should stop rearming green")
+    assert(suppressed.evidence.first?.state.current == .repeatedSmallBox)
+
+    var passingEdge = narrowEdge
+    assert(passingEdge.update([fixed.offsetBy(dx: -0.03, dy: 0)], at: 6.2).left == 1)
+    let closePerson = upperBody(0.81, 0.49, 0.17)
+    assert(narrowEdge.update([closePerson], at: 6.2, compareGeometry: true).current.left == 1)
+    let close = narrowEdge.update([closePerson], at: 6.4, compareGeometry: true)
+    assert(close.current.left == 3 && close.geometry?.left == 3)
+}
+
+do {
+    var narrowNear = ApproachTracker()
+    let narrow = upperBody(0.78, 0.49, 0.06)
+    for time in [0.0, 3.0, 6.0] {
+        _ = narrowNear.update([narrow], at: time, compareGeometry: true)
+    }
+    let confirmed = narrowNear.update([narrow], at: 6.2, compareGeometry: true)
+    assert(confirmed.current.left == 0)
+    assert(confirmed.geometry?.left == 3, "Green suppression should preserve independently confirmed red")
+}
+
+do {
+    for (height, grade) in [(0.36, 2), (0.49, 3)] {
+        var clippedPass = ApproachTracker()
+        let inside = upperBody(0.03, height, 0.16)
+        let clipped = upperBody(0, 0.24, 0.07)
+        _ = clippedPass.update([inside], at: 0, compareGeometry: true)
+        let confirmed = clippedPass.update([inside], at: 0.25, compareGeometry: true)
+        assert(confirmed.current.right == grade && confirmed.geometry?.right == grade)
+        for time in [0.5, 0.75] {
+            let held = clippedPass.update([clipped], at: time, compareGeometry: true)
+            assert(held.current.right == grade && held.geometry?.right == grade, "Clipping should briefly retain the previously confirmed grade")
+            assert(held.evidence.first?.state.candidate == .edgeHold)
+        }
+        let expired = clippedPass.update([clipped], at: 1, compareGeometry: true)
+        assert(expired.current.right == 1 && expired.geometry?.right == 1, "Clipped frames should not extend the hold")
+    }
+    var reentry = ApproachTracker()
+    let inside = upperBody(0.03, 0.48, 0.17)
+    let clipped = upperBody(0, 0.24, 0.07)
+    _ = reentry.update([inside], at: 0, compareGeometry: true)
+    _ = reentry.update([inside], at: 0.2, compareGeometry: true)
+    _ = reentry.update([clipped], at: 0.4, compareGeometry: true)
+    assert(reentry.update([inside], at: 0.6, compareGeometry: true).geometry?.right == 3)
+    let reframed = reentry.update([clipped], at: 0.8, compareGeometry: true, viewUnstable: true)
+    assert(reframed.geometry?.right == 1 && reframed.evidence.first?.state.candidate == .viewUnstable)
+
+    var missing = ApproachTracker()
+    _ = missing.update([inside], at: 0, compareGeometry: true)
+    _ = missing.update([inside], at: 0.2, compareGeometry: true)
+    _ = missing.update([clipped], at: 0.6, compareGeometry: true)
+    assert(missing.update([], at: 0.85, compareGeometry: true).geometry?.right == 1)
+}
+
+do {
+    var diagnostic = ApproachTracker()
+    let narrow = upperBody(0.1, 0.50, 0.085)
+    let first = diagnostic.update([narrow], at: 0, compareGeometry: true)
+    assert(first.evidence.first?.state.current == .needsMoreFrames)
+    let second = diagnostic.update([narrow], at: 0.2, compareGeometry: true)
+    assert(second.current.right == 1 && second.geometry?.right == 3)
+    let fields = second.evidence.first!.logValues
+    assert(fields["height"] as? Double == 0.50 && fields["width"] as? Double == 0.085)
+    assert(fields["current_red_reason"] as? String == "width_limited")
+    assert(fields["candidate_red_reason"] as? String == "confirmed")
+    assert(fields["clipped"] as? Bool == false)
+    assert(JSONSerialization.isValidJSONObject(["red_evidence": [fields]]))
+    assert(diagnostic.update([narrow], at: 0.4, compareGeometry: false).evidence.isEmpty)
+}

@@ -7,7 +7,28 @@ import ServiceManagement
 import Darwin
 
 final class DragPreview: NSView {
+    let video: AVCaptureVideoPreviewLayer
+    private let distanceGuides = DistanceGuideLayer()
     var onDragEnd: (() -> Void)?
+
+    init(frame: CGRect, session: AVCaptureSession) {
+        video = AVCaptureVideoPreviewLayer(session: session)
+        super.init(frame: frame)
+        wantsLayer = true
+        video.videoGravity = .resizeAspect
+        video.frame = bounds
+        video.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        distanceGuides.isHidden = true
+        distanceGuides.needsDisplayOnBoundsChange = true
+        layer?.addSublayer(video)
+        layer?.addSublayer(distanceGuides)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func showDistanceGuides(_ frame: DistanceGuideFrame?) {
+        if frame != nil { distanceGuides.align(to: video, scale: window?.backingScaleFactor ?? 1) }
+        distanceGuides.guides = frame
+    }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { window?.performDrag(with: event); onDragEnd?() }
 }
@@ -17,6 +38,18 @@ final class DraggableIndicator: NSImageView {
     override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(point) ? self : nil }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { window?.performDrag(with: event); onDragEnd?() }
+}
+
+struct DistanceSample {
+    let generation: Int
+    let uptimeMilliseconds: Int
+    let comparison: DistanceComparison
+    let evidence: [DistanceEvidence]
+}
+
+struct DiagnosticPhoto {
+    let data: Data
+    let annotated: Bool
 }
 
 // All camera frames and inference stay in memory on this device.
@@ -35,14 +68,17 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
     private var frameRateAttempts: [TimeInterval] = []
     private var originalFrameRate: (format: AVCaptureDevice.Format, min: CMTime, max: CMTime)?
     private var approachTracker = ApproachTracker()
+    private var distanceGeneration: Int?
+    private var distanceFrameSize: CGSize?
+    private var distanceGuidesEnabled = false
     private var effectiveZone: CGRect?
     private var ignoreZone: CGRect?
-    private var photoRequests: [(Result<Data, Error>) -> Void] = []
+    private var photoRequests: [(Result<DiagnosticPhoto, Error>) -> Void] = []
     private let imageContext = CIContext(options: nil)
     private var autoPhotoGeneration: Int?
     private var previousPhotoLevels: RadarLevels?
-    var onAutomaticPhoto: ((Result<Data, Error>, Int, String, [[String: Any]]) -> Void)?
-    var onStatus: ((String, RadarLevels?, String?) -> Void)?
+    var onAutomaticPhoto: ((Result<DiagnosticPhoto, Error>, Int, String, [[String: Any]]) -> Void)?
+    var onStatus: ((String, RadarLevels?, String?, DistanceSample?, DistanceGuideFrame?) -> Void)?
     var onStarted: (() -> Void)?
 
     func updateConfiguration(effective: CGRect?, ignore: CGRect?, focus: CGRect?, sensitivity: Double) {
@@ -58,7 +94,18 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         queue.async { self.autoPhotoGeneration = generation; self.previousPhotoLevels = nil }
     }
 
-    func requestPhoto(_ completion: @escaping (Result<Data, Error>) -> Void) {
+    func setDistanceComparison(generation: Int?) {
+        queue.async {
+            self.distanceGeneration = generation
+            self.approachTracker.resetGeometry()
+        }
+    }
+
+    func setDistanceGuides(_ enabled: Bool) {
+        queue.async { self.distanceGuidesEnabled = enabled }
+    }
+
+    func requestPhoto(_ completion: @escaping (Result<DiagnosticPhoto, Error>) -> Void) {
         queue.async {
             guard self.running else {
                 DispatchQueue.main.async { completion(.failure(NSError(domain: "FishRadar", code: 2, userInfo: [NSLocalizedDescriptionKey: "摄像头未运行，无法拍照。"]))) }
@@ -210,6 +257,7 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
             self.session.stopRunning(); self.running = false
             self.previousPhotoLevels = nil
             self.lastAlert = nil
+            self.distanceFrameSize = nil
             let requests = self.photoRequests; self.photoRequests.removeAll()
             DispatchQueue.main.async { for request in requests { request(.failure(NSError(domain: "FishRadar", code: 2, userInfo: [NSLocalizedDescriptionKey: "摄像头已暂停，未拍照。"]))) } }
             let seconds = self.approachTracker.stationarySeconds
@@ -223,13 +271,20 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    private func report(_ status: String, _ levels: RadarLevels?, eventID: String? = nil) {
-        DispatchQueue.main.async { self.onStatus?(status, levels, eventID) }
+    private func report(_ status: String, _ levels: RadarLevels?, eventID: String? = nil,
+                        distance: DistanceSample? = nil, guides: DistanceGuideFrame? = nil) {
+        DispatchQueue.main.async { self.onStatus?(status, levels, eventID, distance, guides) }
     }
-    private func jpeg(_ buffer: CVPixelBuffer) -> Result<Data, Error> {
+    private func jpeg(_ buffer: CVPixelBuffer, guides: DistanceGuideFrame? = nil) -> Result<DiagnosticPhoto, Error> {
         let frame = CIImage(cvPixelBuffer: buffer)
-        let data = imageContext.jpegRepresentation(of: frame, colorSpace: CGColorSpaceCreateDeviceRGB(), options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.8])
-        return data.map { .success($0) } ?? .failure(NSError(domain: "FishRadar", code: 3, userInfo: [NSLocalizedDescriptionKey: "照片编码失败。 "]))
+        var annotated: CGImage?
+        if let guides, let base = imageContext.createCGImage(frame, from: frame.extent) {
+            annotated = guides.annotatedPhoto(base)
+        }
+        let image = annotated.map { CIImage(cgImage: $0) } ?? frame
+        let data = imageContext.jpegRepresentation(of: image, colorSpace: CGColorSpaceCreateDeviceRGB(), options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.8])
+        return data.map { .success(DiagnosticPhoto(data: $0, annotated: annotated != nil)) }
+            ?? .failure(NSError(domain: "FishRadar", code: 3, userInfo: [NSLocalizedDescriptionKey: "照片编码失败。 "]))
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -237,12 +292,10 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         let now = Date()
         guard now.timeIntervalSince(lastFrame) >= detectionInterval(lastAlert: lastAlert, now: now.timeIntervalSinceReferenceDate),
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let captureUptime = distanceGeneration.map { _ in Int(ProcessInfo.processInfo.systemUptime * 1000) }
         lastFrame = Date()
-        if !photoRequests.isEmpty {
-            let requests = photoRequests; photoRequests.removeAll()
-            let result = jpeg(buffer)
-            DispatchQueue.main.async { for request in requests { request(result) } }
-        }
+        let requests = photoRequests
+        photoRequests.removeAll()
         let request = VNDetectHumanRectanglesRequest()
         request.upperBodyOnly = true
         do {
@@ -258,9 +311,40 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
                 guard item.offset != candidate else { return false }
                 return includesDetection(item.element, effective: effectiveZone, ignore: ignoreZone)
             }.map(\.element)
-            let approaching = approachTracker.update(otherBoxes, at: Date().timeIntervalSinceReferenceDate)
+            let detectionTime = Date().timeIntervalSinceReferenceDate
+            let size = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+            var viewUnstable = distanceFrameSize.map { $0 != size } ?? false
+            distanceFrameSize = size
+            if #available(macOS 12.3, *), captureDevice?.isCenterStageActive == true { viewUnstable = true }
+            let approaching: RadarLevels
+            var distance: DistanceSample?
+            if let generation = distanceGeneration, let captureUptime {
+                let levels = approachTracker.update(otherBoxes, at: detectionTime, compareGeometry: true, viewUnstable: viewUnstable)
+                approaching = levels.current
+                if let geometry = levels.geometry {
+                    let clipped = otherBoxes.filter { !GeometryDistance.usableFrame.contains($0) }.count
+                    let comparison = DistanceComparison(current: approaching, geometry: geometry, viewUnstable: viewUnstable,
+                                                        personCount: otherBoxes.count, clippedCount: clipped, redStates: levels.evidence.map(\.state))
+                    distance = DistanceSample(generation: generation, uptimeMilliseconds: captureUptime, comparison: comparison, evidence: levels.evidence)
+                }
+            } else {
+                approaching = approachTracker.update(otherBoxes, at: detectionTime, viewUnstable: viewUnstable)
+            }
             if approaching.left > 0 || approaching.right > 0 { lastAlert = now.timeIntervalSinceReferenceDate }
             let status = candidate == nil ? "检测中 · 无法确认使用者" : "正在检测"
+            var guides: DistanceGuideFrame?
+            if distanceGuidesEnabled {
+                let guideBoxes = boxes.enumerated().map { index, box in
+                    let included = includesDetection(box, effective: effectiveZone, ignore: ignoreZone)
+                    return DistanceGuideFrame.Box(rect: box, role: index == candidate ? .user : (included ? .tracked : .ignored))
+                }
+                guides = DistanceGuideFrame(boxes: guideBoxes, current: approaching, geometry: distance?.comparison.geometry,
+                                            viewUnstable: distance?.comparison.viewUnstable == true)
+            }
+            let manualPhoto = requests.isEmpty ? nil : jpeg(buffer, guides: guides)
+            if let manualPhoto {
+                DispatchQueue.main.async { for request in requests { request(manualPhoto) } }
+            }
             if let generation = autoPhotoGeneration,
                shouldCaptureAutomaticPhoto(previous: previousPhotoLevels, current: approaching) {
                 let eventID = UUID().uuidString
@@ -270,12 +354,16 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
                             "is_user_candidate": item.offset == candidate,
                             "included": item.offset != candidate && includesDetection(b, effective: effectiveZone, ignore: ignoreZone)]
                 }
-                let result = jpeg(buffer)
-                report(status, approaching, eventID: eventID)
+                let result = manualPhoto ?? jpeg(buffer, guides: guides)
+                report(status, approaching, eventID: eventID, distance: distance, guides: guides)
                 DispatchQueue.main.async { self.onAutomaticPhoto?(result, generation, eventID, boxInfo) }
-            } else { report(status, approaching) }
+            } else { report(status, approaching, distance: distance, guides: guides) }
             if autoPhotoGeneration != nil { previousPhotoLevels = approaching }
         } catch {
+            if !requests.isEmpty {
+                let result = jpeg(buffer)
+                DispatchQueue.main.async { for request in requests { request(result) } }
+            }
             report("人员检测不可用", nil)
         }
     }
@@ -302,6 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let diagnostics = Diagnostics()
     var lastLoggedStatus: String?
     var lastLoggedLevels: RadarLevels?
+    var lastLoggedDistance: DistanceComparison?
     var currentStatus = "正在启动"
     var currentLevels: RadarLevels?
     var lastRenderedLevels: RadarLevels?
@@ -357,24 +446,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         restorePosition(window, key: "mirrorPosition")
         window.delegate = self
-        let preview = DragPreview(frame: window.contentView!.bounds)
+        let preview = DragPreview(frame: window.contentView!.bounds, session: camera.session)
         preview.onDragEnd = { [weak self] in
             guard let self = self else { return }; self.snapAndSave(self.window, key: "mirrorPosition")
         }
         preview.autoresizingMask = [.width, .height]
-        preview.wantsLayer = true
-        let layer = AVCaptureVideoPreviewLayer(session: camera.session)
-        layer.videoGravity = .resizeAspect
-        layer.frame = preview.bounds
-        layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        preview.layer?.addSublayer(layer)
         window.contentView = preview
-        camera.onStatus = { [weak self] status, levels, eventID in self?.update(status, levels, eventID: eventID) }
+        camera.onStatus = { [weak self, weak preview] status, levels, eventID, distance, guides in
+            guard let self else { return }
+            self.update(status, levels, eventID: eventID, distance: distance)
+            let visibleGuides = guides.flatMap { UserDefaults.standard.bool(forKey: "distanceGuides") ? $0 : nil }
+            self.settingsController?.updateDistanceGuides(visibleGuides)
+            preview?.showDistanceGuides(preview?.window?.isVisible == true ? visibleGuides : nil)
+        }
         camera.onAutomaticPhoto = { [weak self] result, generation, eventID, boxes in
             self?.saveDiagnosticPhoto(result, generation: generation, eventID: eventID, reason: "箭头亮起或升级", boxes: boxes)
         }
-        camera.onStarted = {
-            guard let connection = layer.connection, connection.isVideoMirroringSupported else { return }
+        camera.onStarted = { [weak preview] in
+            guard let connection = preview?.video.connection, connection.isVideoMirroringSupported else { return }
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = true
         }
@@ -396,12 +485,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !hotKeys.configure(savedHotKeys()) { statusMenuItem.title = "快捷键注册失败，请在设置中调整" }
         applyDetectionSettings()
         camera.setStationarySeconds(UserDefaults.standard.object(forKey: "stationarySeconds") as? Double ?? 5)
+        camera.setDistanceGuides(UserDefaults.standard.bool(forKey: "distanceGuides"))
         camera.start()
         if CommandLine.arguments.contains("--resume-monitoring") { toggleResources() }
         if CommandLine.arguments.contains("--settings") { DispatchQueue.main.async { self.showSettings() } }
     }
 
-    func update(_ status: String, _ levels: RadarLevels?, eventID: String? = nil) {
+    func update(_ status: String, _ levels: RadarLevels?, eventID: String? = nil, distance: DistanceSample? = nil) {
         statusMenuItem.title = status
         let previousLevels = currentLevels
         currentStatus = status; currentLevels = levels
@@ -413,6 +503,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             writeDiagnostic("detection", ["id": id, "status": status, "left": levels?.left ?? -1, "right": levels?.right ?? -1])
             lastLoggedStatus = status; lastLoggedLevels = levels
         }
+        if let distance { recordDistanceComparison(distance) }
+        if levels == nil { lastLoggedDistance = nil }
         settingsController?.updateStatus(status, levels: levels)
         if !hasRenderedLevels || lastRenderedLevels != levels {
             setRadarIcon(levels)
@@ -439,7 +531,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func showMirror() {
-        if window.isVisible { window.orderOut(nil) } else { window.orderFrontRegardless() }
+        if window.isVisible {
+            (window.contentView as? DragPreview)?.showDistanceGuides(nil)
+            window.orderOut(nil)
+        } else {
+            window.orderFrontRegardless()
+        }
+    }
+    func setDistanceGuides(_ enabled: Bool) {
+        camera.setDistanceGuides(enabled)
+        if !enabled { (window.contentView as? DragPreview)?.showDistanceGuides(nil) }
     }
     @objc func setStationaryTime() {
         let alert = NSAlert()

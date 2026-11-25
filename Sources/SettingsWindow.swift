@@ -7,6 +7,7 @@ final class SettingsWindowController: NSWindowController {
     private let regionView: RegionView
     private let picker = NSPopUpButton()
     private let statusLabel = NSTextField(labelWithString: "")
+    private let guideToggle = NSButton(checkboxWithTitle: "显示距离辅助线", target: nil, action: nil)
     private let statsLabel = NSTextField(labelWithString: "")
     private let toggle = NSButton(title: "", target: nil, action: nil)
     private let photoToggle = NSButton(checkboxWithTitle: "保存诊断照片（仅本机）", target: nil, action: nil)
@@ -82,7 +83,10 @@ final class SettingsWindowController: NSWindowController {
     private func regionPage() -> NSView {
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 660, height: 475))
         picker.frame = NSRect(x: 15, y: 440, width: 145, height: 26); picker.addItems(withTitles: ["有效区域", "忽略区域", "重点区域"]); picker.target = self; picker.action = #selector(selectZone); v.addSubview(picker)
-        v.addSubview(label("拖动绘制区域；人员框中心落入区域时生效。", 170, 442, 470))
+        v.addSubview(label("拖动绘制区域；按人员框中心判断。", 170, 442, 275))
+        guideToggle.frame = NSRect(x: 465, y: 439, width: 178, height: 26)
+        guideToggle.state = UserDefaults.standard.bool(forKey: "distanceGuides") ? .on : .off
+        guideToggle.target = self; guideToggle.action = #selector(toggleDistanceGuides); v.addSubview(guideToggle)
         regionView.frame = NSRect(x: 15, y: 77, width: 630, height: 354); v.addSubview(regionView)
         regionView.zone = app.storedZone(app.zoneKeys[0])
         regionView.onChange = { [weak self] zone in
@@ -93,7 +97,7 @@ final class SettingsWindowController: NSWindowController {
         }
         let clear = NSButton(title: "清除当前区域", target: self, action: #selector(clearZone)); clear.frame = NSRect(x: 15, y: 38, width: 130, height: 28); v.addSubview(clear)
         statusLabel.frame = NSRect(x: 160, y: 43, width: 480, height: 24); v.addSubview(statusLabel)
-        v.addSubview(label("画面与后视镜同向；忽略区优先。状态：0 无、1 人、2 靠近、3 更近。", 15, 10, 630))
+        v.addSubview(label("画面与后视镜同向；忽略区优先。状态：0 无、1 人、2 近处或靠近、3 更近。", 15, 10, 630))
         return v
     }
     private func switchPage() -> NSView {
@@ -117,7 +121,7 @@ final class SettingsWindowController: NSWindowController {
         v.addSubview(label("实验性监控与可靠性测试", 20, 430, 400))
         toggle.target = self; toggle.action = #selector(toggleDiagnostics); toggle.frame = NSRect(x: 20, y: 385, width: 140, height: 32); v.addSubview(toggle)
         statsLabel.frame = NSRect(x: 175, y: 390, width: 465, height: 22); v.addSubview(statsLabel)
-        v.addSubview(label("每 2 秒记录本进程 CPU、内存和检测状态变化。", 20, 350, 620))
+        v.addSubview(label("记录 CPU、内存和帧率，并对照新旧距离判定。", 20, 350, 620))
         photoToggle.frame = NSRect(x: 20, y: 320, width: 300, height: 24)
         photoToggle.target = self; photoToggle.action = #selector(togglePhotos); v.addSubview(photoToggle)
         v.addSubview(label("箭头亮起或升级时抓拍，走动测试时也拍一张。", 20, 293, 620))
@@ -158,6 +162,20 @@ final class SettingsWindowController: NSWindowController {
         }
     }
     @objc private func selectZone() { regionView.zone = app.storedZone(app.zoneKeys[picker.indexOfSelectedItem]) }
+    @objc private func toggleDistanceGuides() {
+        let enabled = guideToggle.state == .on
+        UserDefaults.standard.set(enabled, forKey: "distanceGuides")
+        app.setDistanceGuides(enabled)
+        if !enabled { regionView.showDistanceGuides(nil) }
+    }
+    func updateDistanceGuides(_ guides: DistanceGuideFrame?) {
+        guard guideToggle.state == .on, regionView.window?.isVisible == true,
+              !regionView.isHiddenOrHasHiddenAncestor else {
+            regionView.showDistanceGuides(nil)
+            return
+        }
+        regionView.showDistanceGuides(guides)
+    }
     @objc private func clearZone() { UserDefaults.standard.removeObject(forKey: app.zoneKeys[picker.indexOfSelectedItem]); regionView.zone = nil; app.applyDetectionSettings() }
     @objc private func chooseWorkApp() {
         guard let window = window else { return }
