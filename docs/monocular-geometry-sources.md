@@ -1,0 +1,21 @@
+# 上半身检测框能提供哪些距离信息
+
+资料核对日期为 2026 年 11 月 25 日。以下推导以 FishRadar 现有的单目 RGB 图像和 Vision 上半身框为输入。Vision 的框坐标按输入图像尺寸归一化，原点在左下角。预览层的尺寸和镜像属于显示坐标。若将来读取像素内参，计算时要把框坐标与内参对齐到同一帧、同一个原点。Apple SDK 的相机内参以帧左上角为原点。见 [上半身检测](https://developer.apple.com/documentation/vision/vndetecthumanrectanglesrequest/upperbodyonly)、[检测框坐标](https://developer.apple.com/documentation/vision/vndetectedobjectobservation/boundingbox)、[Core Media 相机内参](https://developer.apple.com/documentation/coremedia/kcmsamplebufferattachmentkey_cameraintrinsicmatrix)。
+
+## 框变大与轴向深度
+
+在去畸变的针孔模型中，相机坐标 `(X, Y, Z)` 投影到 `u = fx·X/Z + cx`、`v = fy·Y/Z + cy`。`Z` 是沿光轴的深度，`fx`、`fy` 为像素焦距。若用于测量的上下端点深度近似相等，有效高度 `H` 的像素高度为 `h ≈ fy·H/Z`。固定取景、同一个人且姿态和可见部分近似不变时，`Z₂/Z₁ ≈ h₁/h₂`。例如框高增大 25%，在这些条件下对应轴向深度降至约 80%。单帧中同比例放大人体尺寸和深度会保留相同投影。相机内参能确定射线方向，米制深度还需要已知物理尺度。见 [OpenCV 针孔投影及畸变模型](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html)。
+
+对任一像素，令 `x = (u−cx)/fx`、`y = (v−cy)/fy`，其三维点到相机的直线距离为 `Z·sqrt(1+x²+y²)`。同一轴向深度的点越偏离光轴，到相机的直线距离越大。固定姿态的理想平面目标可以横移而保持同一框高。画面边缘的真实观察还受镜头畸变和裁切影响。到座位的距离需要目标点和座位在同一坐标系里的位置。屏幕中心和使用者的上身框各自只给出图像位置。以上为 [OpenCV 投影公式](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html) 的推论。
+
+## 地面单应性和尺度
+
+把地面选为世界坐标的 `Z_w = 0` 平面时，地面点 `(X_w, Y_w)` 与图像点由单应矩阵 `K·[r₁ r₂ t]` 对应，其中 `K` 为内参，`r₁`、`r₂`、`t` 来自相机相对于地面的姿态和位置。逆映射能定位真实落在该平面上的图像点。求公制坐标还需公制参考，例如内参已知时使用相机离地高度及地面法向，或直接使用一组地面控制点及其实际坐标。只找到地平线和竖直消失点时，单视图测量可以恢复部分仿射关系，有关距离仍存在尺度不确定性。上身框底边中点只描述检测框的位置。把它逆投影到地面时，交点一般会落在脚部以外。即使得到人体在地面的落点，还需要座位在同一地面坐标系的位置来计算两者的水平距离。见 [OpenCV 平面单应性推导](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html)、[Criminisi、Reid 和 Zisserman 的《Single View Metrology》§2–3](https://www.robots.ox.ac.uk/~vgg/publications/2000/Criminisi00a/criminisi00a.pdf)。
+
+## 原生 macOS 的相机参数
+
+- **视场角和内参。** Apple macOS 26.4 SDK 把 `AVCaptureDevice.Format.videoFieldOfView`、`geometricDistortionCorrectedVideoFieldOfView` 和 `AVCaptureConnection.isCameraIntrinsicMatrixDeliverySupported`／`isCameraIntrinsicMatrixDeliveryEnabled` 标为原生 macOS 不可用。`kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix` 在 macOS 有定义，实际是否随视频帧交付取决于采集管线。在其他支持的系统上，请求交付内参还要求连接的输入格式和输出都支持。见 [水平视场角](https://developer.apple.com/documentation/avfoundation/avcapturedevice/format/videofieldofview)、[畸变校正后的视场角](https://developer.apple.com/documentation/avfoundation/avcapturedevice/format/geometricdistortioncorrectedvideofieldofview)、[内参交付支持](https://developer.apple.com/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliverysupported)、[启用内参交付](https://developer.apple.com/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliveryenabled)、[内参附件](https://developer.apple.com/documentation/coremedia/kcmsamplebufferattachmentkey_cameraintrinsicmatrix)。
+- **可选元数据。** `kCMFormatDescriptionExtension_HorizontalFieldOfView` 可用于 macOS 12 及以上，SDK 以千分之一度表示它。一次本机检查将会话配置为 `.medium`，在尚未启动采集时读取活动格式，返回 `nil`。这个结果只反映该次检查。Apple 的 Depth Pro 2 示例另外读取 `CinematicFramingVirtualCameraFocalLength`，源码将其标为未公开的帧附件，不能作为跨设备的接口保证。见 [Core Media 视场角扩展](https://developer.apple.com/documentation/coremedia/kcmformatdescriptionextension_horizontalfieldofview)、[Apple Depth Pro 2 相机源码](https://github.com/apple-aiml-research/ml-depth-pro-2/blob/main/demo/apple/Sources/demo/Camera.swift)。
+- **实际取景。** 若主点在图像中心且已知当前输出的水平视场 `θx`，针孔模型给出 `fx = W/(2·tan(θx/2))`，其中 `W` 是该输出的像素宽度。正方像素下 `fy = fx`。固定焦距时对全帧等比缩放会同比改变像素焦距和像素框尺寸，归一化框尺寸保持不变。裁切再放大会改变有效视场，让静止人物的框也变大。原生 macOS SDK 不提供 `AVCaptureDevice.videoZoomFactor`，macOS 12.3 起的 `isCenterStageActive` 能指示人物居中是否生效，Apple 说明该功能会自动平移或收放取景。M1 和 M5 MacBook Air 的官方规格分别列出 720p FaceTime HD 和 12MP 人物居中摄像头，两款规格均未提供当前输出视场角。见 [OpenCV 相机内参](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html)、[Apple 视频变焦](https://developer.apple.com/documentation/avfoundation/avcapturedevice/videozoomfactor)、[人物居中状态](https://developer.apple.com/documentation/avfoundation/avcapturedevice/iscenterstageactive)、[M1 机型规格](https://support.apple.com/en-us/111883)、[M5 机型规格](https://support.apple.com/en-us/126320)。
+
+在现有输入下，同一目标连续、完整的上身框增大可用作相对靠近的证据。转身、弯腰、遮挡恢复、出入画边缘和自动取景都会破坏推导条件。单帧大框可以表示人物在画面中占比高，它同时受体型、姿态和取景影响。提示强度可以随连续证据增加。当可见范围或取景变化时应降低置信度，固定米数和到座位的距离需要额外的观测量。见 [OpenCV 投影模型](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html)、[Vision 上半身检测](https://developer.apple.com/documentation/vision/vndetecthumanrectanglesrequest/upperbodyonly)、[Apple 人物居中状态](https://developer.apple.com/documentation/avfoundation/avcapturedevice/iscenterstageactive)。

@@ -56,10 +56,25 @@ extension AppDelegate {
         do { try diagnostics.write(type, values) }
         catch {
             resourceTimer?.invalidate(); resourceTimer = nil; lastUsage = nil
+            camera.setDistanceComparison(generation: nil)
             setPhotoCapture(false)
             resourceItem?.title = "资源监控：记录失败"
             settingsController?.setDiagnosticMessage("记录失败：\(error.localizedDescription)")
         }
+    }
+    func recordDistanceComparison(_ sample: DistanceSample) {
+        let comparison = sample.comparison
+        guard resourceTimer != nil, sample.generation == resourceGeneration,
+              comparison != lastLoggedDistance else { return }
+        lastLoggedDistance = comparison
+        writeDiagnostic("distance_comparison", [
+            "capture_uptime_ms": sample.uptimeMilliseconds,
+            "current_left": comparison.current.left, "current_right": comparison.current.right,
+            "geometry_left": comparison.geometry.left, "geometry_right": comparison.geometry.right,
+            "view_unstable": comparison.viewUnstable,
+            "person_count": comparison.personCount, "clipped_count": comparison.clippedCount,
+            "red_evidence": sample.evidence.map(\.logValues),
+        ])
     }
     func setPhotoCapture(_ enabled: Bool) {
         savePhotos = enabled
@@ -74,12 +89,13 @@ extension AppDelegate {
             self?.saveDiagnosticPhoto(result, generation: generation, eventID: eventID, reason: reason, boxes: nil)
         }
     }
-    func saveDiagnosticPhoto(_ result: Result<Data, Error>, generation: Int, eventID: String, reason: String, boxes: [[String: Any]]?) {
+    func saveDiagnosticPhoto(_ result: Result<DiagnosticPhoto, Error>, generation: Int, eventID: String, reason: String, boxes: [[String: Any]]?) {
         guard savePhotos, resourceTimer != nil, photoGeneration == generation else { return }
         do {
-            let data = try result.get()
-            let path = try diagnostics.savePhoto(data)
+            let photo = try result.get()
+            let path = try diagnostics.savePhoto(photo.data)
             var values: [String: Any] = ["event_id": eventID, "reason": reason, "file": path]
+            if photo.annotated { values["image_mirrored"] = true; values["distance_guides"] = true }
             if let boxes { values["boxes"] = boxes; values["coordinates"] = "unmirrored_bottom_left" }
             writeDiagnostic("photo", values)
             settingsController?.setPhotoMessage("照片已保存：\(path)")
@@ -92,6 +108,7 @@ extension AppDelegate {
     @objc func toggleResources() {
         if resourceTimer != nil {
             resourceGeneration += 1
+            camera.setDistanceComparison(generation: nil)
             writeDiagnostic("monitor_stop", [:])
             resourceTimer?.invalidate(); resourceTimer = nil; lastUsage = nil; resourceItem?.title = "资源监控：关闭"
             setPhotoCapture(false)
@@ -101,8 +118,9 @@ extension AppDelegate {
             resourceItem?.title = "资源监控：记录失败"
             settingsController?.setDiagnosticMessage("记录失败：\(error.localizedDescription)"); return
         }
-        lastLoggedStatus = nil; lastLoggedLevels = nil
+        lastLoggedStatus = nil; lastLoggedLevels = nil; lastLoggedDistance = nil
         resourceGeneration += 1
+        camera.setDistanceComparison(generation: resourceGeneration)
         camera.resetFrameSample()
         resourceItem?.title = "资源监控：采样中…"
         resourceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.sampleResources() }
