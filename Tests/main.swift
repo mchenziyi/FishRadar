@@ -46,6 +46,29 @@ var edgeEntry = ApproachTracker()
 _ = edgeEntry.update([upperBody(0.9, 0.18, 0.10)], at: 0)
 _ = edgeEntry.update([upperBody(0.8, 0.29, 0.11)], at: 0.4)
 assert(edgeEntry.update([upperBody(0.75, 0.29, 0.11)], at: 0.8).left == 1, "An initial clipped box should not establish approach")
+
+do {
+    // Box sizes from two close passes that previously stopped at yellow.
+    let passes = [
+        [upperBody(0.8536, 0.5219, 0.1464), upperBody(0.7641, 0.5088, 0.1998)],
+        [upperBody(0.685, 0.4879, 0.1419), upperBody(0.777, 0.4898, 0.1628)],
+    ]
+    for frames in passes {
+        var earlierRed = ApproachTracker()
+        assert(earlierRed.update([frames[0]], at: 0).left == 1, "One frame alone should not confirm red")
+        assert(earlierRed.update([frames[1]], at: 0.2).left == 3, "Two close observations should confirm red earlier")
+    }
+
+    for (person, expected) in [
+        (upperBody(0.73, 0.30, 0.13), 1),
+        (upperBody(0.73, 0.39, 0.16), 2),
+        (upperBody(0.73, 0.52, 0.10), 1),
+    ] {
+        var unchanged = ApproachTracker()
+        _ = unchanged.update([person], at: 0)
+        assert(unchanged.update([person.offsetBy(dx: 0.02, dy: 0)], at: 0.2).left == expected)
+    }
+}
 print("ApproachTracker tests passed")
 var seated = ApproachTracker()
 for i in 0..<5 { assert(seated.update([box(0.1, 0.2)], at: Double(i)) == RadarLevels(left: 0, right: 1)) }
@@ -117,7 +140,7 @@ do {
     assert(intermittent.update([], at: 5).right == 0)
     assert(intermittent.update([chair], at: 5.4).right == 0, "A fixed small box should stop rearming green after repeated gaps")
     assert(intermittent.update([upperBody(0.02, 0.42, 0.15)], at: 5.8).right == 1, "Growth at the same location should restore detection")
-    assert(intermittent.update([upperBody(0.02, 0.42, 0.15)], at: 6.2).right == 2)
+    assert(intermittent.update([upperBody(0.02, 0.42, 0.15)], at: 6.2).right == 3)
 
     var remembered = ApproachTracker()
     _ = remembered.update([chair], at: 0)

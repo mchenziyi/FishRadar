@@ -71,6 +71,7 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
     private var distanceGeneration: Int?
     private var distanceFrameSize: CGSize?
     private var distanceGuidesEnabled = false
+    private var distanceGuideDetailsVisible = false
     private var effectiveZone: CGRect?
     private var ignoreZone: CGRect?
     private var photoRequests: [(Result<DiagnosticPhoto, Error>) -> Void] = []
@@ -103,6 +104,10 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
 
     func setDistanceGuides(_ enabled: Bool) {
         queue.async { self.distanceGuidesEnabled = enabled }
+    }
+
+    func setDistanceGuideDetailsVisible(_ visible: Bool) {
+        queue.async { self.distanceGuideDetailsVisible = visible }
     }
 
     func requestPhoto(_ completion: @escaping (Result<DiagnosticPhoto, Error>) -> Void) {
@@ -298,8 +303,9 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         photoRequests.removeAll()
         let request = VNDetectHumanRectanglesRequest()
         request.upperBodyOnly = true
+        let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up)
         do {
-            try VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up).perform([request])
+            try handler.perform([request])
             inferenceFrameCount += 1
             let boxes = (request.results ?? []).filter { $0.confidence >= 0.45 }.map(\.boundingBox)
             // The largest prominent central person is only a heuristic for the user.
@@ -332,11 +338,22 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
             }
             if approaching.left > 0 || approaching.right > 0 { lastAlert = now.timeIntervalSinceReferenceDate }
             let status = candidate == nil ? "检测中 · 无法确认使用者" : "正在检测"
+            let saveAutomaticPhoto = autoPhotoGeneration != nil
+                && shouldCaptureAutomaticPhoto(previous: previousPhotoLevels, current: approaching)
             var guides: DistanceGuideFrame?
             if distanceGuidesEnabled {
-                let guideBoxes = boxes.enumerated().map { index, box in
+                var guideBoxes: [DistanceGuideFrame.Box] = []
+                if let candidate, distanceGuideDetailsVisible || !requests.isEmpty || saveAutomaticPhoto {
+                    // Face location only refines visible annotations, not the live radar result.
+                    let faceRequest = VNDetectFaceRectanglesRequest()
+                    try? handler.perform([faceRequest])
+                    let faces = (faceRequest.results ?? []).map(\.boundingBox)
+                    guideBoxes = DistanceGuideFrame.userBoxes(in: boxes[candidate], faces: faces)
+                }
+                guideBoxes += boxes.enumerated().compactMap { index, box in
+                    guard index != candidate else { return nil }
                     let included = includesDetection(box, effective: effectiveZone, ignore: ignoreZone)
-                    return DistanceGuideFrame.Box(rect: box, role: index == candidate ? .user : (included ? .tracked : .ignored))
+                    return DistanceGuideFrame.Box(rect: box, role: included ? .tracked : .ignored)
                 }
                 guides = DistanceGuideFrame(boxes: guideBoxes, current: approaching, geometry: distance?.comparison.geometry,
                                             viewUnstable: distance?.comparison.viewUnstable == true)
@@ -345,8 +362,7 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
             if let manualPhoto {
                 DispatchQueue.main.async { for request in requests { request(manualPhoto) } }
             }
-            if let generation = autoPhotoGeneration,
-               shouldCaptureAutomaticPhoto(previous: previousPhotoLevels, current: approaching) {
+            if let generation = autoPhotoGeneration, saveAutomaticPhoto {
                 let eventID = UUID().uuidString
                 let boxInfo: [[String: Any]] = boxes.enumerated().map { item in
                     let b = item.element
@@ -396,6 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var lastRenderedLevels: RadarLevels?
     var hasRenderedLevels = false
     var settingsController: SettingsWindowController?
+    private var distanceGuideDetailsVisible = false
     var savePhotos = false
     var photoGeneration = 0
 
@@ -456,6 +473,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else { return }
             self.update(status, levels, eventID: eventID, distance: distance)
             let visibleGuides = guides.flatMap { UserDefaults.standard.bool(forKey: "distanceGuides") ? $0 : nil }
+            let detailedMirror = preview.map { $0.window?.isVisible == true && $0.bounds.width >= 280 && $0.bounds.height >= 160 } ?? false
+            let details = visibleGuides != nil && (detailedMirror || self.settingsController?.isDistancePreviewVisible == true)
+            if details != self.distanceGuideDetailsVisible {
+                self.distanceGuideDetailsVisible = details
+                self.camera.setDistanceGuideDetailsVisible(details)
+            }
             self.settingsController?.updateDistanceGuides(visibleGuides)
             preview?.showDistanceGuides(preview?.window?.isVisible == true ? visibleGuides : nil)
         }
@@ -577,6 +600,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func didWake() { lifecycle.sleeping = false; reconcileDetection() }
     @objc func didLock() { lifecycle.locked = true; reconcileDetection() }
     @objc func didUnlock() { lifecycle.locked = false; reconcileDetection() }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        settingsController?.window?.makeFirstResponder(nil)
+        return .terminateNow
+    }
     @objc func quit() { camera.stop(); NSApp.terminate(nil) }
 }
 

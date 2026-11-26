@@ -76,6 +76,8 @@ func detectionInterval(lastAlert: TimeInterval?, now: TimeInterval) -> TimeInter
 }
 
 struct ApproachTracker {
+    static let redSizeThreshold: CGFloat = 0.42
+
     private struct Sample { let time: TimeInterval; let box: CGRect }
     private struct Track {
         var samples: [Sample]
@@ -220,8 +222,8 @@ struct ApproachTracker {
         guard sizes.count >= 2 else { redReason = .needsMoreFrames; return 1 }
         // The second-largest size needs support from two frames and tolerates one outlier.
         let size = sizes[1]
-        if size >= 0.45 { redReason = .confirmed; return 3 }
-        if recordEvidence && recent.filter({ $0.box.height >= 0.45 }).count >= 2 {
+        if size >= Self.redSizeThreshold { redReason = .confirmed; return 3 }
+        if recordEvidence && recent.filter({ $0.box.height >= Self.redSizeThreshold }).count >= 2 {
             redReason = .widthLimited
         }
         if size >= 0.32 { return 2 }

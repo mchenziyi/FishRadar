@@ -19,4 +19,30 @@ let savedPhoto = try Data(contentsOf: photoURL)
 assert(savedPhoto == fakeJPEG)
 let attrs = try FileManager.default.attributesOfItem(atPath: photoURL.path)
 assert((attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+
+for _ in 1..<200 {
+    _ = try logger.savePhoto(fakeJPEG)
+}
+do {
+    _ = try logger.savePhoto(fakeJPEG)
+    assertionFailure("The default limit should stop after 200 photos")
+} catch {
+    assert(error.localizedDescription.contains("200"))
+}
+let extra = try logger.savePhoto(fakeJPEG, maximumCount: 201)
+assert(FileManager.default.fileExists(atPath: dir.appendingPathComponent(extra).path))
+do {
+    _ = try logger.savePhoto(fakeJPEG, maximumCount: 201)
+    assertionFailure("The configured limit should stop after 201 photos")
+} catch {
+    assert(error.localizedDescription.contains("201"))
+}
+do {
+    _ = try logger.savePhoto(fakeJPEG, maximumCount: 0)
+    assertionFailure("A photo limit must be positive")
+} catch {
+    assert(error.localizedDescription.contains("正整数"))
+}
+let photos = try FileManager.default.contentsOfDirectory(atPath: photoURL.deletingLastPathComponent().path)
+assert(photos.count == 201 && photos.contains(photoURL.lastPathComponent))
 print("Photo storage tests passed")

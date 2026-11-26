@@ -10,7 +10,7 @@ func distanceGuideRect(_ raw: CGRect, in area: CGRect) -> CGRect {
 
 struct DistanceGuideFrame: Equatable {
     struct Box: Equatable {
-        enum Role { case tracked, user, ignored }
+        enum Role { case tracked, userHead, userBody, ignored }
         let rect: CGRect
         let role: Role
     }
@@ -20,6 +20,32 @@ struct DistanceGuideFrame: Equatable {
     let geometry: RadarLevels?
     let viewUnstable: Bool
 
+    static func userBoxes(in person: CGRect, faces: [CGRect]) -> [Box] {
+        let frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let person = person.intersection(frame)
+        guard !person.isEmpty else { return [] }
+        let face = faces.filter {
+            person.contains(CGPoint(x: $0.midX, y: $0.midY))
+                && $0.midY > person.midY && $0.width >= person.width * 0.22
+                && $0.height >= person.height * 0.18
+        }.max { $0.width * $0.height < $1.width * $1.height }
+
+        let head: CGRect
+        if let face {
+            let bottom = face.minY - face.height * 0.08
+            let top = max(person.maxY, face.maxY + face.height * 0.18)
+            head = CGRect(x: face.minX - face.width * 0.14, y: bottom,
+                          width: face.width * 1.28, height: top - bottom).intersection(frame)
+        } else {
+            head = CGRect(x: person.midX - person.width * 0.23, y: person.minY + person.height * 0.54,
+                          width: person.width * 0.46, height: person.height * 0.46)
+        }
+        let shoulder = min(person.maxY, head.minY + head.height * 0.04)
+        let body = CGRect(x: person.minX, y: person.minY, width: person.width,
+                          height: max(0, shoulder - person.minY))
+        return [Box(rect: body, role: .userBody), Box(rect: head, role: .userHead)].filter { !$0.rect.isEmpty }
+    }
+
     func draw(in context: CGContext, area: CGRect) {
         guard area.width > 0, area.height > 0 else { return }
         let compact = area.width < 280 || area.height < 160
@@ -27,6 +53,8 @@ struct DistanceGuideFrame: Equatable {
         let white = CGColor(gray: 1, alpha: 1)
         let muted = CGColor(gray: 0.90, alpha: 1)
         let tracked = CGColor(red: 0.12, green: 1, blue: 1, alpha: 1)
+        let headColor = CGColor(red: 0.16, green: 0.64, blue: 1, alpha: 1)
+        let bodyColor = CGColor(red: 1, green: 0.30, blue: 0.30, alpha: 1)
 
         context.saveGState()
         defer { context.restoreGState() }
@@ -73,20 +101,27 @@ struct DistanceGuideFrame: Equatable {
             if compact && !isTracked { continue }
             let rect = distanceGuideRect(box.rect, in: area).intersection(area)
             guard !rect.isEmpty else { continue }
-            let color = isTracked ? tracked : muted
-            stroke(CGPath(rect: rect, transform: nil), color: color, width: isTracked ? 2.5 : 1.5, dashed: !isTracked)
-            if compact { continue }
-            let role = isTracked ? "" : box.role == .user ? "自己 " : "区域排除 "
             let height = Int((box.rect.height * 100).rounded())
-            label("\(role)\(height)%", x: rect.minX, y: max(area.minY, rect.maxY - 18 * scale), color: color)
+            let color: CGColor
+            let name: String
+            switch box.role {
+            case .tracked: (color, name) = (tracked, "\(height)%")
+            case .userHead: (color, name) = (headColor, "自己 · 头部")
+            case .userBody: (color, name) = (bodyColor, "自己 · 上半身")
+            case .ignored: (color, name) = (muted, "区域排除 \(height)%")
+            }
+            let ignored = box.role == .ignored
+            stroke(CGPath(rect: rect, transform: nil), color: color, width: ignored ? 1.5 : 2.5, dashed: ignored)
+            label(name, x: rect.minX, y: max(area.minY, rect.maxY - 18 * scale), color: color)
         }
         if compact { return }
         let rulerX = area.minX + 8 * scale
         let rulerBase = area.minY + 24 * scale
+        let redReference = ApproachTracker.redSizeThreshold
         let ruler = CGMutablePath()
         ruler.move(to: CGPoint(x: rulerX, y: rulerBase))
-        ruler.addLine(to: CGPoint(x: rulerX, y: rulerBase + 0.45 * area.height))
-        for fraction in [0.0, 0.32, 0.45] {
+        ruler.addLine(to: CGPoint(x: rulerX, y: rulerBase + redReference * area.height))
+        for fraction in [0.0, 0.32, redReference] {
             let y = rulerBase + area.height * fraction
             ruler.move(to: CGPoint(x: rulerX, y: y))
             ruler.addLine(to: CGPoint(x: rulerX + 5 * scale, y: y))
@@ -94,7 +129,7 @@ struct DistanceGuideFrame: Equatable {
         stroke(ruler, color: white, width: 1.5)
         label("框高参考", x: rulerX, y: area.minY + 3 * scale)
         label("32%", x: rulerX + 7 * scale, y: rulerBase + 0.32 * area.height - 9 * scale)
-        label("45%", x: rulerX + 7 * scale, y: rulerBase + 0.45 * area.height - 9 * scale)
+        label("\(Int((redReference * 100).rounded()))%", x: rulerX + 7 * scale, y: rulerBase + redReference * area.height - 9 * scale)
 
         let names = ["白", "绿", "黄", "红"]
         func summary(_ levels: RadarLevels) -> String { "左\(names[levels.left]) 右\(names[levels.right])" }

@@ -82,6 +82,13 @@ extension AppDelegate {
         camera.setAutomaticPhotos(generation: enabled ? photoGeneration : nil)
         settingsController?.refreshDiagnostics()
     }
+    var diagnosticPhotoLimit: Int {
+        get {
+            let saved = UserDefaults.standard.integer(forKey: "diagnosticPhotoLimit")
+            return saved > 0 ? saved : Diagnostics.defaultPhotoLimit
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "diagnosticPhotoLimit") }
+    }
     func captureDiagnosticPhoto(eventID: String, reason: String) {
         guard savePhotos, resourceTimer != nil else { return }
         let generation = photoGeneration
@@ -93,7 +100,7 @@ extension AppDelegate {
         guard savePhotos, resourceTimer != nil, photoGeneration == generation else { return }
         do {
             let photo = try result.get()
-            let path = try diagnostics.savePhoto(photo.data)
+            let path = try diagnostics.savePhoto(photo.data, maximumCount: diagnosticPhotoLimit)
             var values: [String: Any] = ["event_id": eventID, "reason": reason, "file": path]
             if photo.annotated { values["image_mirrored"] = true; values["distance_guides"] = true }
             if let boxes { values["boxes"] = boxes; values["coordinates"] = "unmirrored_bottom_left" }
