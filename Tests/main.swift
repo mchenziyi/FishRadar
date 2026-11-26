@@ -18,6 +18,31 @@ assert(passing.update([box(0.3, 0.2)], at: 10.8) == RadarLevels(left: 0, right: 
 func upperBody(_ x: CGFloat, _ height: CGFloat, _ width: CGFloat) -> CGRect {
     CGRect(x: x, y: 0.2, width: width, height: height)
 }
+do {
+    // A very close person can appear cropped, then get smaller while walking away.
+    let first = CGRect(x: 0.69, y: 0, width: 0.22, height: 0.78)
+    let frames = [
+        first, upperBody(0.73, 0.37, 0.15), upperBody(0.79, 0.35, 0.14),
+        upperBody(0.83, 0.24, 0.10), upperBody(0.86, 0.22, 0.09),
+    ]
+    for mirrored in [false, true] {
+        var retreat = ApproachTracker()
+        let levels = frames.enumerated().map { index, frame in
+            let result = retreat.update([mirrored ? mirrorZone(frame) : frame], at: Double(index) * 0.4,
+                                        compareGeometry: true)
+            if index == 0 {
+                assert(result.evidence.first?.logValues["current_red_reason"] as? String == "strong_first_frame")
+            }
+            return mirrored ? result.current.right : result.current.left
+        }
+        assert(levels == [3, 2, 2, 2, 1], "A clearly near first sight should warn red before fading to yellow and green")
+    }
+
+    var unstable = ApproachTracker()
+    assert(unstable.update([first], at: 0, viewUnstable: true).left == 1)
+    var narrow = ApproachTracker()
+    assert(narrow.update([upperBody(0.72, 0.78, 0.14)], at: 0).left == 1)
+}
 var closePass = ApproachTracker()
 assert(closePass.update([upperBody(0.68, 0.48, 0.17)], at: 0).left == 1)
 assert(closePass.update([upperBody(0.76, 0.48, 0.17)], at: 0.4).left == 3, "A near person should warn even when moving sideways")

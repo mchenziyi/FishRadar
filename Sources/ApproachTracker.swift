@@ -25,6 +25,7 @@ struct DistanceComparison: Equatable {
 struct DistanceEvidence {
     enum RedReason: String {
         case confirmed, needsMoreFrames = "needs_more_frames", belowThreshold = "below_threshold"
+        case strongFirstFrame = "strong_first_frame"
         case widthLimited = "width_limited", frameEdge = "frame_edge", edgeHold = "edge_hold"
         case stationary, repeatedSmallBox = "repeated_small_box", viewUnstable = "view_unstable"
     }
@@ -188,7 +189,8 @@ struct ApproachTracker {
                 candidateReason = .stationary
                 tracks[index].lastUnclipped = nil
             } else {
-                current = proximityLevel(track.samples, at: time, redReason: &currentReason, recordEvidence: compareGeometry)
+                current = proximityLevel(track.samples, at: time, redReason: &currentReason,
+                                         recordEvidence: compareGeometry, viewUnstable: viewUnstable)
                 candidate = clipped ? track.geometry.edgeLevel(at: time) : track.geometry.level
                 if viewUnstable { candidateReason = .viewUnstable }
                 else if clipped { candidateReason = candidate > 1 ? .edgeHold : .frameEdge }
@@ -216,10 +218,18 @@ struct ApproachTracker {
     }
 
     private func proximityLevel(_ history: [Sample], at time: TimeInterval, redReason: inout DistanceEvidence.RedReason,
-                                recordEvidence: Bool) -> Int {
+                                recordEvidence: Bool, viewUnstable: Bool) -> Int {
         let recent = history.suffix(3).filter { time - $0.time <= 1 }
         let sizes = recent.map { Self.apparentSize($0.box) }.sorted(by: >)
-        guard sizes.count >= 2 else { redReason = .needsMoreFrames; return 1 }
+        guard sizes.count >= 2 else {
+            // A clear close-range size on entry may be the only near frame of a quick pass.
+            if history.count == 1, !viewUnstable, (sizes.first ?? 0) >= 0.50 {
+                redReason = .strongFirstFrame
+                return 3
+            }
+            redReason = .needsMoreFrames
+            return 1
+        }
         // The second-largest size needs support from two frames and tolerates one outlier.
         let size = sizes[1]
         if size >= Self.redSizeThreshold { redReason = .confirmed; return 3 }
