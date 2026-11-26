@@ -1,6 +1,7 @@
 import Foundation
 
 final class Diagnostics {
+    static let defaultPhotoLimit = 200
     let fileURL: URL
     private let limit: UInt64
     private let formatter = ISO8601DateFormatter()
@@ -10,12 +11,17 @@ final class Diagnostics {
         fileURL = folder.appendingPathComponent("diagnostics.jsonl")
         self.limit = limit
     }
-    func savePhoto(_ data: Data) throws -> String {
+    func savePhoto(_ data: Data, maximumCount: Int = Diagnostics.defaultPhotoLimit) throws -> String {
+        guard maximumCount > 0 else {
+            throw NSError(domain: "FishRadar", code: 4, userInfo: [NSLocalizedDescriptionKey: "照片上限必须为正整数。"])
+        }
         let fm = FileManager.default
         let folder = fileURL.deletingLastPathComponent().appendingPathComponent("photos", isDirectory: true)
         try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let files = try fm.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".jpg") }
-        guard files.count < 200 else { throw NSError(domain: "FishRadar", code: 1, userInfo: [NSLocalizedDescriptionKey: "照片已达到 200 张上限，请整理照片后继续。 "]) }
+        guard files.count < maximumCount else {
+            throw NSError(domain: "FishRadar", code: 1, userInfo: [NSLocalizedDescriptionKey: "照片已达到 \(maximumCount) 张上限。请整理照片或调高上限后重新开启抓拍。"])
+        }
         let name = UUID().uuidString + ".jpg"
         let url = folder.appendingPathComponent(name)
         guard fm.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else { throw CocoaError(.fileWriteUnknown) }
